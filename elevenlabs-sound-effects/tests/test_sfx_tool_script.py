@@ -347,3 +347,38 @@ def test_loopcheck_judges_a_long_file_at_its_real_seam(tmp_path):
     out = run("loopcheck", str(long_file))[1]
     assert abs(out["duration_seconds"] - 100) < 0.1 and out["channels_checked"] == 8
     assert out["verdict"] == "click" and out["edge_level_difference_db"] > 15
+
+
+@needs_ffmpeg
+def test_process_mono_downmixes_before_levelling(tmp_path):
+    src = tmp_path / "stereo.wav"
+    left, right = tone(tmp_path / "l.wav", 0.8, 220), tone(tmp_path / "r.wav", 0.8, 330)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(left), "-i", str(right), "-filter_complex",
+                    "[0][1]amerge=inputs=2", str(src)], check=True)
+    code, out = run("process", str(src), "--out", str(tmp_path / "mono.wav"), "--mono", "--loudness", "-18")
+    # Levelled on the mono signal that ships, so the target holds after the downmix.
+    assert code == 0 and out["input"]["channels"] == 2 and out["output"]["channels"] == 1
+    assert out["applied"]["mono"] is True and abs(out["output"]["integrated_lufs"] + 18) <= 1
+
+
+@needs_ffmpeg
+def test_pack_variations_names_takes_and_reports_their_loudness_spread(tmp_path):
+    takes = [tmp_path / f"take{i}.wav" for i in range(3)]
+    for take, gain in zip(takes, (1.0, 0.3, 0.1)):
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", f"anoisesrc=d=0.8:c=brown:a={gain}",
+                        str(take)], check=True)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    code, out = run("pack", *map(str, takes), "--name", "Footstep Gravel", "--out-dir", str(out_dir), "--variations")
+    assert code == 0 and [s["file"] for s in out["sounds"]] == [f"footstep_gravel_0{i}.wav" for i in (1, 2, 3)]
+    assert out["variation_set"] is True and out["loudness_spread_lu"] > 10 and "process --loudness" in out["loudness_note"]
+    manifest = json.loads((out_dir / "footstep-gravel" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["loudness_spread_lu"] == out["loudness_spread_lu"]
+
+    levelled = []
+    for i, take in enumerate(takes):
+        dst = tmp_path / f"lvl{i}.wav"
+        assert run("process", str(take), "--out", str(dst), "--loudness", "-18")[0] == 0
+        levelled.append(str(dst))
+    code, out = run("pack", *levelled, "--name", "Footstep Gravel", "--out-dir", str(out_dir), "--variations", "--force")
+    assert code == 0 and out["loudness_spread_lu"] <= 1.0 and "loudness_note" not in out

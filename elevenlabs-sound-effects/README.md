@@ -26,7 +26,7 @@ The plugin also ships:
 | Part | What it does |
 |---|---|
 | `elevenlabs-sound-design` skill | How to write ElevenLabs prompts (from ElevenLabs' own prompting guide), make loops, pick a format for where the sound goes (game engine, video, UI, chat), build a sound pack, and deliver per surface |
-| `sfx_tool.py` (in the skill) | Local post-processing with ffmpeg: trim silence, loudness-normalise, fades, loop-seam click check, convert to OGG/WAV/MP3, pack a named set into a folder + `manifest.json` + zip. Costs no ElevenLabs credits |
+| `sfx_tool.py` (in the skill) | Local post-processing with ffmpeg: mono downmix, trim silence, loudness-normalise, fades, loop-seam click check, convert to OGG/WAV/MP3, pack a named set into a folder + `manifest.json` + zip (or a game variation set with matched-loudness checks). Costs no ElevenLabs credits |
 | Desktop sound card | Each generated sound shows in the chat as a card: waveform, play/pause, gapless loop audition, download in each format, reveal, and **Next** actions (Hermes Desktop with tool-media renderers; older Desktops use their built-in player) |
 | Desktop sound library | ⌘K → **ElevenLabs: open sound library**: every sound this profile made, with its prompt and settings |
 
@@ -41,7 +41,7 @@ Or straight from this repo: `hermes plugins install NousResearch/hermes-official
 The installer asks for your ElevenLabs API key if `ELEVENLABS_API_KEY` is not set yet (create one
 under **Profile → API keys** at <https://elevenlabs.io/app/settings/api-keys>). It is the same key
 Hermes's ElevenLabs text-to-speech voice uses, so if you already have that set up there is nothing
-to enter. The tool only appears to the agent once the key is set. Plugins are installed per profile:
+to enter. A restricted key needs the **Sound Effects** permission enabled (separate from Text to Speech). The tool only appears to the agent once the key is set. Plugins are installed per profile:
 use `hermes -p <profile> plugins install elevenlabs-sound-effects` for another profile.
 
 The only Python dependency is `httpx`, which Hermes already ships.
@@ -150,6 +150,8 @@ python3 sfx_tool.py process loop.mp3 --out loop.ogg                             
 python3 sfx_tool.py loopfix loop.wav --out fixed.wav                                  # crossfade the seam (+ crossfade_level_db)
 python3 sfx_tool.py loopcheck fixed.wav                                               # seamless | click | silent, worst channel (+ a note when the seam dips)
 python3 sfx_tool.py pack a.mp3 b.mp3 --name "UI pack" --out-dir . --format ogg # folder + manifest.json + zip
+python3 sfx_tool.py process take1.mp3 --out t1.wav --trim --loudness -18 --mono      # a positional game one-shot: mono, levelled
+python3 sfx_tool.py pack t1.wav t2.wav t3.wav --name "Footstep Gravel" --out-dir . --variations  # footstep_gravel_01..03 + loudness_spread_lu
 ```
 
 Every run prints one JSON line (`{"ok": true, ...}` or `{"ok": false, "code": ..., "error": ...}`),

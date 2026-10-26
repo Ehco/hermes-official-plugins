@@ -21,12 +21,15 @@ surface. Every generation is billed to the user's ElevenLabs account; local proc
 ## When to Use
 
 - The user asks for a sound effect, foley, ambience, UI sound, stinger, whoosh, drum loop or a set of them.
-- The user wants a generated sound trimmed, normalised, looped cleanly, converted (ogg/wav/mp3) or packed.
+- The user wants a generated sound trimmed, normalised, made mono, looped cleanly, converted (ogg/wav/mp3) or packed.
+- The user is building game audio: positional one-shots, variation sets for an engine's random picker, loops.
 - Don't use for: speech or voices (Hermes's text-to-speech), full songs (ElevenLabs' Music API, not this plugin).
 
 ## Prerequisites
 
-- The `elevenlabs_sound_effect` tool (this plugin, with `ELEVENLABS_API_KEY` set).
+- The `elevenlabs_sound_effect` tool (this plugin, with `ELEVENLABS_API_KEY` set). A restricted
+  ElevenLabs key needs the **Sound Effects** permission. When ElevenLabs refuses a key over a missing
+  permission, the tool passes its error through: tell the user to enable that permission on the key.
 - Optional, for post-processing: `ffmpeg` and `ffprobe` on PATH of the machine Hermes runs on. Check
   with `terminal(command="ffmpeg -version")`; without them skip processing and deliver the original.
 
@@ -89,13 +92,37 @@ Keep one sound per call. For a set, make one call per sound with a consistent st
 
 | Destination | Deliver | Why |
 |---|---|---|
-| Godot, Unity, Unreal, web games | OGG (Vorbis) for music/ambience loops, WAV for short one-shots | engines import both; OGG keeps loops small, WAV avoids decode cost and MP3 padding on one-shots |
+| Godot, Unity, Unreal, web games | OGG (Vorbis) for music/ambience loops, WAV for short one-shots; mono for positional sounds (`process --mono`), stereo for ambience, music and UI | engines import both; OGG keeps loops small, WAV avoids decode cost and MP3 padding on one-shots. A sound placed in the world (footstep, hit, door, creature) is a point source the engine attenuates and pans, so it ships mono by convention (Unity has a Force To Mono import option for it); a stereo bed stays stereo |
 | Video editing (Premiere, Resolve, Final Cut) | WAV 48 kHz | the video standard; no generation loss |
 | App/UI sounds | WAV (or OGG on Android/web) | short, sample-accurate start |
 | Chat (Telegram, Discord, Slack, WhatsApp) | MP3 | plays inline on most chat apps; Ogg Opus and WAV may arrive as plain file attachments (Telegram does this). Discord: Hermes after v0.22.5 sends MP3/WAV as normal attachments that play inline; v0.22.5 and earlier sent them as voice messages |
 
 MP3 adds a short silence at the start (encoder padding), so never use MP3 for gapless loops in an
 engine; convert loops to OGG or WAV.
+
+## Game sound sets (variations)
+
+Sounds a game repeats (footsteps, impacts, sword swings, pickups) need several takes that the engine
+picks between at random, or the repetition is obvious. ElevenLabs has no seed or batch option: each
+take is its own call.
+
+1. Brief: the sound, its surface or material, and how many takes (4-8 for footsteps and impacts,
+   3-4 for rarer sounds). Quote the cost: takes x the per-sound bill.
+2. Generate each take with the SAME prompt, the same `duration_seconds`, and `prompt_influence`
+   around 0.2-0.3 so the takes differ. Add the destination to the prompt ("single hit, no tail,
+   dry"): the engine adds the room.
+3. Level every take to one target, and downmix positional sounds:
+   `process TAKE --out TAKE_lvl.wav --trim --loudness -18 --mono` (drop `--mono` for UI and
+   ambience; -14 to -18 LUFS suits games). Takes at different loudness stand out when the engine
+   picks at random.
+4. `pack TAKE_lvl... --name "Footstep Gravel" --out-dir DIR --variations`: names the files
+   `footstep_gravel_01.wav`, `_02`... (one base name, numbered, which is how engine random containers
+   expect takes), measures each take, and reports `loudness_spread_lu`. Over 1 LU the result carries a
+   `loudness_note`: re-level the outliers and pack again. Report the spread.
+5. In the engine (say so when you deliver; you can't do it from here unless an engine tool is
+   connected): import the files, then put the takes in its random picker: a Sound Cue Random node or a
+   MetaSound in Unreal, an Audio Random Container in Unity 6, an `AudioStreamRandomizer` in Godot 4.
+   Loops need the engine's loop flag set on import (Unreal: the Sound Wave's Looping option).
 
 ## Local post-processing script
 
@@ -108,17 +135,18 @@ Run it with `terminal` (use `python` if `python3` is missing, as on Windows):
 
 ```
 python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" probe IN
-python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" process IN --out OUT.ogg [--trim] [--loudness -16] [--fade-ms 10]
+python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" process IN --out OUT.ogg [--mono] [--trim] [--loudness -16] [--fade-ms 10]
 python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" loopfix IN --out OUT.wav [--crossfade-ms 20]
 python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" loopcheck IN
-python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" pack --name NAME --out-dir DIR FILE [FILE ...] [--format ogg|wav|mp3] [--prompts prompts.json]
+python3 "${HERMES_SKILL_DIR}/scripts/sfx_tool.py" pack --name NAME --out-dir DIR FILE [FILE ...] [--format ogg|wav|mp3] [--prompts prompts.json] [--variations]
 ```
 
 A file name that starts with `-` reads as an option: pass it as `./-name.mp3` (or put `--` before
 the file names).
 
 - `process`: converts to the format implied by `OUT`'s extension (`.ogg` Vorbis, `.wav` 16-bit PCM,
-  `.mp3`, `.opus`). Options for one-shots: `--trim` removes leading/trailing silence, `--loudness`
+  `.mp3`, `.opus`). `--mono` downmixes to one channel before anything else, so the loudness is set
+  and measured on the mono file that ships (fine on loops too). Options for one-shots: `--trim` removes leading/trailing silence, `--loudness`
   aims at that many LUFS (EBU R128; -16 for chat/web, -23 for broadcast video, -14 to -18 for games),
   capped by a -1.5 dBTP true-peak ceiling, `--fade-ms` adds in/out fades (refused when the two fades
   would cover the whole clip). Without options it only converts. It never overwrites its input. Its
@@ -139,7 +167,9 @@ the file names).
   (`01-name.ext`; a file without an extension gets the one its contents imply), writes
   `manifest.json` (file, source, duration, sample rate, channels, codec, and the prompt for each file
   when `--prompts` maps file names to prompts) and `DIR/NAME.zip`. `--force` replaces an earlier pack
-  of the same name completely.
+  of the same name completely. `--variations` treats the files as takes of ONE sound: it names them
+  `name_01.ext`, `name_02.ext`..., adds each take's `integrated_lufs`, and reports `variation_set`,
+  `loudness_spread_lu` and, over 1 LU, a `loudness_note` (in the JSON line and `manifest.json`).
 
 ## Procedure
 
@@ -170,7 +200,8 @@ the file names).
    Completion: every sound produced is on exactly one `MEDIA:` line.
 6. A sound pack: generate each sound (steps 3-4), then run `pack`; deliver the zip on its own
    `MEDIA:` line, plus the manifest summary. Completion: the zip exists and
-   `manifest.json` lists every sound.
+   `manifest.json` lists every sound. Takes of one sound for a game follow "Game sound sets" above
+   (`--variations`; completion: `loudness_spread_lu` is 1 or less).
 7. End with what was made: per sound the real length (`length_seconds`; say so when `length_note`
    reports a difference from the request), format and the credits billed, plus the loop
    verdict when a loop was checked. Offer the next step (variations, shorter/longer, a loop, the other model).
@@ -196,4 +227,6 @@ the file names).
 - Each delivered sound came from a successful tool result (`success: true`) or an `ok: true` script line.
 - Loops you called seamless have a `loopcheck` verdict of `seamless`.
 - Every length you quoted is a `length_seconds` (or a `probe` result), not a requested duration.
+- A variation set you delivered has a `loudness_spread_lu` of 1 or less, and positional takes report
+  `channels: 1`.
 - Each delivered file appears on exactly one `MEDIA:` line.

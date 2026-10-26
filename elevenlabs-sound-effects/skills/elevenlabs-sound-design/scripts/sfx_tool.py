@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Local post-processing for generated sound effects (stdlib + ffmpeg/ffprobe).
 
-Subcommands: probe, process (trim silence, loudness-normalise, fades, convert), loopfix (crossfade
-a loop's end into its start), loopcheck (seam click check, seam dip measurement), pack (named folder + manifest.json +
-zip). Every run prints exactly ONE JSON line on
+Subcommands: probe, process (mono downmix, trim silence, loudness-normalise, fades, convert), loopfix
+(crossfade a loop's end into its start), loopcheck (seam click check, seam dip measurement), pack (named
+folder + manifest.json + zip; ``--variations`` names takes of one sound for an engine's random picker and
+measures how evenly loud they are). Every run prints exactly ONE JSON line on
 stdout, ``{"ok": true, ...}`` or ``{"ok": false, "code": ..., "error": ...}``, and exits 0 or 1. It
 never prints a traceback: ffmpeg missing, a bad input file or bad arguments all come back as that
 line, so an agent can read the outcome instead of guessing.
@@ -144,6 +145,11 @@ def _measure_looped(path: Path, ffmpeg: str, ffprobe: str) -> dict:
     return measure_loudness(path, ffmpeg, loops=loops)
 
 
+def _mono_filters(mono: bool) -> list[str]:
+    # First in every chain, so loudness is measured and set on the mono signal that ships.
+    return ["aformat=channel_layouts=mono"] if mono else []
+
+
 def _trim_filters(trim: bool) -> list[str]:
     edge = "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.01"
     return [edge, "areverse", edge, "areverse"] if trim else []
@@ -154,8 +160,8 @@ def _fade_filters(fade_ms: float) -> list[str]:
     return [f"afade=t=in:d={d:g}", "areverse", f"afade=t=in:d={d:g}", "areverse"] if fade_ms > 0 else []
 
 
-def _filters(trim: bool, loudness: float | None, fade_ms: float) -> list[str]:
-    chain = _trim_filters(trim)
+def _filters(trim: bool, loudness: float | None, fade_ms: float, mono: bool = False) -> list[str]:
+    chain = _mono_filters(mono) + _trim_filters(trim)
     if loudness is not None:
         chain.append(f"loudnorm=I={loudness:g}:TP={_LOUDNESS_CEILING_DBTP:g}:LRA=11")
     return chain + _fade_filters(fade_ms)
@@ -232,13 +238,15 @@ def cmd_process(args) -> dict:
         raise Failure("bad_args", "--fade-ms must be between 0 and 5000")
     before = probe(src, ffprobe)
     check = _fade_fits(ffprobe, args.fade_ms, args.trim) if args.fade_ms > 0 else None
-    applied = {"trim_silence": args.trim, "loudness_target_lufs": args.loudness, "fade_ms": args.fade_ms}
+    applied = {"mono": args.mono, "trim_silence": args.trim, "loudness_target_lufs": args.loudness,
+               "fade_ms": args.fade_ms}
+    pre = _mono_filters(args.mono) + _trim_filters(args.trim)
     # loudnorm measures in 400 ms blocks: a shorter clip reads -70 LUFS and one pass would push it to the ceiling.
-    if args.loudness is not None and measure_loudness(src, ffmpeg, pre=_trim_filters(args.trim))["integrated_lufs"] is None:
+    if args.loudness is not None and measure_loudness(src, ffmpeg, pre=pre)["integrated_lufs"] is None:
         after = _process_short(args, src, out, before, check, ffmpeg, ffprobe)
         applied["loudness_gain_db"] = after.pop("gain_db")
     else:
-        chain = _filters(args.trim, args.loudness, args.fade_ms)
+        chain = _filters(args.trim, args.loudness, args.fade_ms, args.mono)
         _encode(ffmpeg, src, out, chain, before["sample_rate"] if args.loudness is not None else None, check)
         after = {**probe(out, ffprobe), **measure_loudness(out, ffmpeg)}
     note = _loudness_note(args.loudness, after)
@@ -253,7 +261,8 @@ def _process_short(args, src: Path, out: Path, before: dict, check, ffmpeg: str,
     trimmed = Path(_temp_beside(out, ".wav"))
     try:
         cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src), "-vn"]
-        _run(cmd + (["-af", ",".join(_trim_filters(args.trim))] if args.trim else []) + ["-c:a", "pcm_f32le", str(trimmed)])
+        pre = _mono_filters(args.mono) + _trim_filters(args.trim)
+        _run(cmd + (["-af", ",".join(pre)] if pre else []) + ["-c:a", "pcm_f32le", str(trimmed)])
         level = _measure_looped(trimmed, ffmpeg, ffprobe)
         gain = 0.0
         if level["integrated_lufs"] is not None:
@@ -467,9 +476,9 @@ def cmd_loopcheck(args) -> dict:
     return result
 
 
-def _slug(text: str) -> str:
+def _slug(text: str, sep: str = "-") -> str:
     ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")  # ünï -> uni
-    return re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")[:48]
+    return re.sub(r"[^a-z0-9]+", sep, ascii_text.lower()).strip(sep)[:48]
 
 
 def _pack_ext(info: dict, src: Path, fmt: str | None) -> str:
@@ -506,7 +515,7 @@ def cmd_pack(args) -> dict:
         if not isinstance(prompts, dict):
             raise Failure("bad_args", "--prompts must map file names to prompts (a JSON object)")
     ffprobe = _tool("ffprobe", args.ffprobe)
-    ffmpeg = _tool("ffmpeg", args.ffmpeg) if args.format else None
+    ffmpeg = _tool("ffmpeg", args.ffmpeg) if args.format or args.variations else None
     folder = out_dir / name
     zip_path = out_dir / f"{name}.zip"
     if (folder.exists() or folder.is_symlink() or zip_path.exists() or zip_path.is_symlink()) and not args.force:
@@ -522,9 +531,11 @@ def cmd_pack(args) -> dict:
     except OSError as exc:  # a read-only --out-dir
         raise _cannot_write(out_dir, exc) from None
     tmp_zip = None
+    summary: dict = {}
     try:
         entries = _fill_pack(staging, sources, prompts, args, ffmpeg, ffprobe)
-        manifest = {"name": args.name, "sounds": entries}
+        summary = _variation_summary(entries) if args.variations else {}
+        manifest = {"name": args.name, **summary, "sounds": entries}
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
                                                encoding="utf-8")
         fd, tmp_zip = tempfile.mkstemp(prefix=f".{name}.", suffix=".zip", dir=out_dir)
@@ -564,14 +575,28 @@ def cmd_pack(args) -> dict:
         if tmp_zip and os.path.exists(tmp_zip):
             os.unlink(tmp_zip)
     return {"ok": True, "folder": str(folder), "zip": str(zip_path), "count": len(entries),
-            "manifest": str(folder / "manifest.json"), "sounds": entries}
+            "manifest": str(folder / "manifest.json"), **summary, "sounds": entries}
+
+
+def _variation_summary(entries: list[dict]) -> dict:
+    """Takes of one sound play at random in an engine, so they should be equally loud: report the spread."""
+    levels = [e["integrated_lufs"] for e in entries if e.get("integrated_lufs") is not None]
+    summary: dict = {"variation_set": True}
+    if len(levels) > 1:
+        spread = round(max(levels) - min(levels), 1)
+        summary["loudness_spread_lu"] = spread
+        if spread > 1.0:
+            summary["loudness_note"] = (f"the takes differ by {spread:g} LU, so some will stand out when an engine "
+                                        "picks at random; level each with `process --loudness` first")
+    return summary
 
 
 def _fill_pack(folder: Path, sources: list[Path], prompts: dict, args, ffmpeg: str | None, ffprobe: str) -> list[dict]:
     entries, used = [], set()
     for index, src in enumerate(sources, 1):
         ext = _pack_ext(probe(src, ffprobe), src, args.format)  # probe the source: errors name it, not staging
-        target = folder / f"{index:02d}-{_pack_stem(src)}{ext}"
+        stem = f"{_slug(args.name, '_')}_{index:02d}" if args.variations else f"{index:02d}-{_pack_stem(src)}"
+        target = folder / f"{stem}{ext}"
         while target.name in used:
             target = target.with_name(f"{target.stem}-x{ext}")
         used.add(target.name)
@@ -583,6 +608,11 @@ def _fill_pack(folder: Path, sources: list[Path], prompts: dict, args, ffmpeg: s
         entry = {"file": target.name, "source": src.name, "duration_seconds": info["duration_seconds"],
                  "sample_rate": info["sample_rate"], "channels": info["channels"], "codec": info["codec"],
                  "bytes": info["bytes"]}
+        if args.variations and ffmpeg:  # cmd_pack resolves ffmpeg for --variations
+            level = measure_loudness(target, ffmpeg)
+            if level["integrated_lufs"] is None:  # shorter than one 400 ms block: measured looped, like process
+                level = _measure_looped(target, ffmpeg, ffprobe)
+            entry["integrated_lufs"] = level["integrated_lufs"]
         prompt = prompts.get(src.name) or prompts.get(str(src))
         if isinstance(prompt, str):
             entry["prompt"] = prompt
@@ -606,6 +636,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-trim", dest="trim", action="store_false", help="keep the edges (the default)")
     p.add_argument("--loudness", type=float, default=None, help="target integrated loudness in LUFS, e.g. -16")
     p.add_argument("--fade-ms", type=float, default=0.0, help="fade in and out, milliseconds")
+    p.add_argument("--mono", action="store_true",
+                   help="downmix to one channel (sounds a game engine places in 3D space)")
     p.add_argument("--force", action="store_true", help="replace an existing output file")
     p.set_defaults(fn=cmd_process)
     p = sub.add_parser("loopfix", help="crossfade a loop's end into its start (fixes a click without a gap)")
@@ -623,6 +655,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", required=True)
     p.add_argument("--format", choices=sorted(FORMAT_EXT), help="convert every file to this format")
     p.add_argument("--prompts", help="JSON file mapping source file names to the prompts that made them")
+    p.add_argument("--variations", action="store_true",
+                   help="the files are takes of ONE sound: name them NAME_01, NAME_02... and report their loudness spread")
     p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_pack)
     return parser
