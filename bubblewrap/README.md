@@ -190,9 +190,26 @@ Unset and missing variables change nothing and log nothing.
 
 ## What it does not isolate
 
-- **File tools run on the host.** `read_file`, `write_file`, `patch` and `search_files` are not
-  confined by the sandbox; they keep Hermes' normal host-path behaviour and approval rules. The model
-  is told this in its system prompt.
+- **File tools run on the host.** Hermes gives its file tools an in-process fast path on a local
+  backend, and this backend is one, so the sandbox does not confine them. Each can reach a dot entry
+  the sandbox hides, the Hermes home, and paths outside the writable set:
+
+  | Tool | What runs on the host |
+  |---|---|
+  | `read_file` | The read itself, in the Hermes process. |
+  | `write_file` | The write (temp file and rename), in the Hermes process. |
+  | `patch` | The read and the write-back, in the Hermes process. |
+  | `search_files` | ripgrep, started by the Hermes process. Its fallbacks (`find`/`grep` when there is no ripgrep, and a few helper probes) run in the sandbox. |
+
+  Hermes' own file-safety rules still apply (writes to `~/.ssh` and the other protected credential
+  paths are refused), but reads are not limited to what a command can see. The scratch directory is
+  the other way round: commands see their sandbox's own scratch dir at the `$TMPDIR` path, the file
+  tools see the shared one on the host, so a file one side puts there is invisible to the other;
+  hand files over through the working directory. Running Hermes with
+  `HERMES_NATIVE_FILE_READ=0` (core's switch for that fast path, not a setting of this plugin) sends
+  every file operation through the sandbox, at the cost of a sandbox spawn per operation; the same
+  paths are then hidden and read-only for the file tools. The model is told which case applies in its
+  system prompt.
 - **The rest of the host filesystem is readable.** Anything your user can read outside the hidden set
   (`/etc`, other dotfiles, secrets kept inside project directories) is readable by a command. Keep
   secrets in the hidden paths.
