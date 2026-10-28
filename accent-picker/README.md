@@ -50,4 +50,36 @@ Everything the picker uses comes from `@hermes/plugin-sdk`: `$accentOverride`,
 `useValue`, `STATUSBAR_AREAS`, `PALETTE_AREA`. Reference:
 https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk
 
+## Reimagined build (Accent Picker+)
+
+A community rework of this plugin, built on top of the original by **Teknium**.
+It turns the authoring-only picker into a full user-facing theme editor while
+keeping the original's OKLCH field, swatches and commands:
+
+- **Full square field.** The chroma/lightness square painted every
+  out-of-sRGB-gamut pixel transparent (`oklchToSrgb255` returns `null` outside
+  gamut), which carved a wedge out of the panel for saturated hues. Out-of-gamut
+  pixels are now gamut-clipped per row against `maxChroma(l, hue)`, so the
+  picker is always a full square.
+- **Durable accent.** The picker no longer stops at the scratch
+  `$accentOverride` preview: *Save as theme* re-derives the palette with the SDK's
+  `retintTheme` and installs the result as a user theme, written through the
+  host's `window.hermesDesktop.uiPreferences` bridge so the ui-preferences sync
+  cannot clobber it. Selection survives restarts and plugin reloads.
+- **Colors tab.** Every palette slot (background, sidebar, card, popover,
+  border, input, …) can be recolored with the same OKLCH field, editing the
+  palette the current mode actually paints. Updates apply **live while you
+  drag** (throttled to ~8 fps so the theme install stays smooth).
+- **Reset / Revert / Restore.** Per-slot *Reset to default* (back to the base
+  theme's color) and *Revert edit* (back to the color before the edit), plus a
+  *Restore base theme* button and an *Accent+: revert the last color edit*
+  palette command. Undo history is capped at 25 entries.
+- **Safer mode handling.** Slot edits now target the palette `paletteFor(seed,
+  resolvedMode)` actually reads (branching on the luminance-derived
+  `renderedMode` made edits land in a palette the other mode never reads once an
+  edit brightened the background).
+
+The artifact in `desktop/plugin.js` is the shipped, tested build; `src/` still
+holds the original picker source and will be synced in a follow-up.
+
 MIT.
