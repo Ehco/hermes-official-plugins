@@ -78,6 +78,19 @@ keeping the original's OKLCH field, swatches and commands:
   resolvedMode)` actually reads (branching on the luminance-derived
   `renderedMode` made edits land in a palette the other mode never reads once an
   edit brightened the background).
+- **Curated accent strip.** The decorative swatch grid is replaced by documented
+  UI accents grouped by source, each labelled with its product: Editors (VS Code
+  `#007ACC`, Visual Studio `#68217A`, JetBrains `#FE2857`, GitHub `#0969DA`,
+  Linear `#5E6AD2`), AI (Claude `#D97757`, OpenAI `#10A37F`, Google `#4285F4`),
+  Productivity (Notion `#337EA9`, Slack `#36C5F0`, Figma `#F24E1E`, Stripe
+  `#635BFF`) and Web & social (Firefox `#FF7139`, Discord `#5865F2`, Shopify
+  `#96BF48`, Spotify `#1DB954`). Clicking one seeds the OKLCH field and paints it
+  live instead of guessing what a bare square meant.
+- **UI presets tab.** The plugin now mirrors Settings ▸ Appearance: every installed
+  theme (built-ins plus imported/user themes) is listed with a mode-aware
+  accent dot and active marker, alongside the Auto/Light/Dark appearance mode.
+  Applying calls `setTheme`, so the preset choice persists per profile exactly
+  like a pick from the settings grid.
 
 ### Later fixes (in this build)
 

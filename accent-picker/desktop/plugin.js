@@ -31,15 +31,67 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 
-var SWATCHES = [
-  { hex: "#0053FD", name: "Nous blue \xB7 263\xB0 (light seed)" },
-  { hex: "#4a84fe", name: "Nous blue \xB7 263\xB0 (dark seed)" },
-  { hex: "#1540B1", name: "Psyche blue \xB7 264\xB0" },
-  { hex: "#0969da", name: "GitHub blue \xB7 257\xB0" },
-  { hex: "#196d31", name: "GitHub green \xB7 148\xB0" },
-  { hex: "#8250df", name: "GitHub purple \xB7 303\xB0" },
-  { hex: "#bf3989", name: "GitHub pink \xB7 354\xB0" },
-  { hex: "#bc4c00", name: "GitHub orange \xB7 52\xB0" }
+// Popular UI accents, grouped by where the colour actually comes from. Each
+// entry is a shipped UI accent or a documented brand accent, not a decorative
+// hue: clicking one seeds the OKLCH picker and puts that colour on screen.
+var ACCENT_GROUPS = [
+  {
+    label: "Editors",
+    items: [
+      { hex: "#007ACC", name: "VS Code" },
+      { hex: "#68217A", name: "Visual Studio" },
+      { hex: "#FE2857", name: "JetBrains" },
+      { hex: "#0969DA", name: "GitHub" },
+      { hex: "#5E6AD2", name: "Linear" }
+    ]
+  },
+  {
+    label: "AI",
+    items: [
+      { hex: "#D97757", name: "Claude" },
+      { hex: "#10A37F", name: "OpenAI" },
+      { hex: "#4285F4", name: "Google" }
+    ]
+  },
+  {
+    label: "Productivity",
+    items: [
+      { hex: "#337EA9", name: "Notion" },
+      { hex: "#36C5F0", name: "Slack" },
+      { hex: "#F24E1E", name: "Figma" },
+      { hex: "#635BFF", name: "Stripe" }
+    ]
+  },
+  {
+    label: "Web & social",
+    items: [
+      { hex: "#FF7139", name: "Firefox" },
+      { hex: "#5865F2", name: "Discord" },
+      { hex: "#96BF48", name: "Shopify" },
+      { hex: "#1DB954", name: "Spotify" }
+    ]
+  }
+];
+var UI_PRESETS = [
+  { name: "nous", label: "Nous", light: "#0053FD", dark: "#4A84FE" },
+  { name: "github", label: "GitHub", light: "#196D31", dark: "#4F9E5E" },
+  { name: "catppuccin", label: "Catppuccin", light: "#6D2EBF", dark: "#CBA6F7" },
+  { name: "everforest", label: "Everforest", light: "#586B35", dark: "#A7C080" },
+  { name: "solarized", label: "Solarized", light: "#675E34", dark: "#6EA1C4" },
+  { name: "nous-alt", label: "Nous Alt", light: "#0053FD", dark: "#FFE6CB" },
+  { name: "classic", label: "Classic Hermes", light: "#FFBF00", dark: "#FFBF00" },
+  { name: "midnight", label: "Midnight", light: "#DDD6FF", dark: "#DDD6FF" },
+  { name: "ember", label: "Ember", light: "#FFD8B0", dark: "#FFD8B0" },
+  { name: "mono", label: "Mono", light: "#EAEAEA", dark: "#EAEAEA" },
+  { name: "slate", label: "Slate", light: "#C9D1D9", dark: "#C9D1D9" },
+  { name: "cyberpunk", label: "Cyberpunk", light: "#00FF41", dark: "#00FF41" }
+];
+var UI_PRESET_MAP = {};
+UI_PRESETS.forEach((preset) => { UI_PRESET_MAP[preset.name] = preset; });
+var APPEARANCE_MODES = [
+  { id: "system", label: "Auto" },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" }
 ];
 var FIELD_W = 224;
 var FIELD_H = 130;
@@ -715,10 +767,83 @@ function SlotEditor({ baseTheme, palette, slotKey, resolvedMode, onApply, onBack
   ] });
 }
 
+// ── curated accent strip + UI presets ───────────────────────────────────────
+
+function PopularAccents({ onPick }) {
+  return /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-0.5", children: [
+    /* @__PURE__ */ jsxs("div", { className: "mt-1 flex items-baseline justify-between", children: [
+      /* @__PURE__ */ jsx("span", { className: "text-[9px] font-medium uppercase tracking-wide text-(--ui-text-tertiary)", children: "Popular UI accents" }),
+      /* @__PURE__ */ jsx("span", { className: "font-mono text-[8px] text-(--ui-text-quaternary)", children: "click to seed" })
+    ] }),
+    ACCENT_GROUPS.map((group) => /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-0.5", children: [
+      /* @__PURE__ */ jsx("div", { className: "mt-0.5 text-[8px] uppercase tracking-wide text-(--ui-text-quaternary)", children: group.label }),
+      /* @__PURE__ */ jsx("div", { className: "grid grid-cols-2 gap-1", children: group.items.map((item) => /* @__PURE__ */ jsxs(
+        "button",
+        {
+          className: "flex min-w-0 items-center gap-1 rounded-sm border border-(--dt-border) px-1 py-0.5 text-left text-[10px] leading-tight hover:bg-(--chrome-action-hover)",
+          onClick: () => onPick(item.hex),
+          title: `${group.label} \u00B7 ${item.name} \u00B7 ${item.hex} \u00B7 seed this accent`,
+          type: "button",
+          children: [
+            /* @__PURE__ */ jsx("span", { className: "size-3.5 shrink-0 rounded-sm border border-(--dt-border)", style: { background: item.hex } }),
+            /* @__PURE__ */ jsx("span", { className: "min-w-0 flex-1 truncate", children: item.name })
+          ]
+        },
+        item.hex
+      )) })
+    ] }, group.label))
+  ] });
+}
+
+function ThemePresets({ availableThemes, currentAccent, mode, onApply, resolvedMode, setMode, themeName }) {
+  const activeName = typeof themeName === "string" ? themeName.replace(/-(light|dark)$/, "") : "";
+  const themes = availableThemes
+    .filter((item) => item && typeof item.name === "string" && typeof item.label === "string")
+    .sort((a, b) => Number(b.name === activeName) - Number(a.name === activeName));
+  return /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-1.5", children: [
+    /* @__PURE__ */ jsxs("div", { className: "mt-1 flex items-baseline justify-between", children: [
+      /* @__PURE__ */ jsx("span", { className: "text-[9px] font-medium uppercase tracking-wide text-(--ui-text-tertiary)", children: "UI presets" }),
+      /* @__PURE__ */ jsx("span", { className: "font-mono text-[8px] text-(--ui-text-quaternary)", children: "Settings \u25B8 Appearance" })
+    ] }),
+    /* @__PURE__ */ jsx("div", { className: "grid grid-cols-3 gap-1", children: APPEARANCE_MODES.map((item) => /* @__PURE__ */ jsx(
+      "button",
+      {
+        className: mode === item.id ? "rounded-sm border border-(--dt-border) bg-(--chrome-action-hover) px-1 py-0.5 text-[10px]" : "rounded-sm border border-(--dt-border) px-1 py-0.5 text-[10px] hover:bg-(--chrome-action-hover)",
+        onClick: () => setMode(item.id),
+        title: `Appearance mode: ${item.label}`,
+        type: "button",
+        children: item.label
+      },
+      item.id
+    )) }),
+    /* @__PURE__ */ jsx("div", { className: "flex max-h-[196px] flex-col gap-1 overflow-y-auto pr-0.5", children: themes.map((item) => {
+      const preset = UI_PRESET_MAP[item.name];
+      const active = item.name === activeName;
+      const accent = preset ? (resolvedMode === "dark" ? preset.dark : preset.light) : active ? currentAccent : "var(--ui-text-quaternary)";
+      return /* @__PURE__ */ jsxs(
+        "button",
+        {
+          className: active ? "flex min-w-0 items-center gap-1.5 rounded-sm border border-(--dt-border) bg-(--chrome-action-hover) px-1 py-1 text-left text-[11px] leading-tight" : "flex min-w-0 items-center gap-1.5 rounded-sm border border-(--dt-border) px-1 py-1 text-left text-[11px] leading-tight hover:bg-(--chrome-action-hover)",
+          onClick: () => onApply(item.name, item.label),
+          title: `${item.name} \u00B7 ${item.description}`,
+          type: "button",
+          children: [
+            /* @__PURE__ */ jsx("span", { className: "size-3 shrink-0 rounded-full border border-(--dt-border)", style: { background: accent } }),
+            /* @__PURE__ */ jsx("span", { className: "min-w-0 flex-1 truncate", children: item.label }),
+            active ? /* @__PURE__ */ jsx("span", { className: "font-mono text-[8px] uppercase text-(--ui-text-tertiary)", children: "on" }) : null
+          ]
+        },
+        item.name
+      );
+    }) }),
+    /* @__PURE__ */ jsx("p", { className: "h-3 font-mono text-[10px] leading-tight text-(--ui-text-tertiary)", children: `${resolvedMode} preset accent dots \u00B7 click to switch` })
+  ] });
+}
+
 // ── main picker ──────────────────────────────────────────────────────────────
 
 function AccentPicker() {
-  const { theme, renderedMode, resolvedMode } = useTheme();
+  const { availableThemes, mode, setMode, setTheme, theme, themeName, renderedMode, resolvedMode } = useTheme();
   const override = useValue($accentOverride);
   const painted = theme.colors.primary;
   const [tab, setTab] = useState("accent");
@@ -799,6 +924,15 @@ function AccentPicker() {
     setSlot(key);
   };
   const saved = isOurs(theme.name);
+  const applyPreset = (name, label) => {
+    setAccentOverride(null);
+    setTheme(name);
+    notify(`UI preset \u201C${label}\u201D applied.`);
+  };
+  const seedAccent = (hex) => {
+    const next = hexToOklch(hex) ?? lch;
+    commit(next, true);
+  };
   if (tab === "colors" && slot) {
     return /* @__PURE__ */ jsx(SlotEditor, { baseTheme: slotBase.current ?? theme, onApply, onBack: () => setSlot(null), palette, resolvedMode, slotKey: slot });
   }
@@ -820,6 +954,16 @@ function AccentPicker() {
           onClick: () => setTab("colors"),
           type: "button",
           children: "Colors"
+        }
+      ),
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          className: tab === "themes" ? "flex-1 rounded-sm border border-(--dt-border) bg-(--chrome-action-hover) px-1.5 py-0.5 text-[11px]" : "flex-1 rounded-sm border border-(--dt-border) px-1.5 py-0.5 text-[11px]",
+          onClick: () => setTab("themes"),
+          title: "Switch a built-in UI preset from Settings \u25B8 Appearance",
+          type: "button",
+          children: "Presets"
         }
       )
     ] }),
@@ -852,17 +996,7 @@ function AccentPicker() {
         )
       ] }),
       /* @__PURE__ */ jsx(ValueGrid, { hex: text && /^#?[0-9a-f]{6}$/i.test(text) ? text : oklchToHex(lch) }),
-      /* @__PURE__ */ jsx("div", { className: "grid grid-cols-8 gap-1", children: SWATCHES.map((swatch) => /* @__PURE__ */ jsx(
-        "button",
-        {
-          className: "size-5 rounded-sm border border-(--dt-border)",
-          onClick: () => setAccentOverride(swatch.hex),
-          style: { background: swatch.hex },
-          title: `${swatch.name} \xB7 ${swatch.hex}`,
-          type: "button"
-        },
-        swatch.hex
-      )) }),
+      /* @__PURE__ */ jsx(PopularAccents, { onPick: seedAccent }),
       /* @__PURE__ */ jsx(
         "button",
         {
@@ -889,7 +1023,7 @@ function AccentPicker() {
         ] })
       ] }),
       /* @__PURE__ */ jsx("p", { className: "h-3 font-mono text-[10px] leading-tight text-(--ui-text-tertiary)", children: saved ? "theme saved \u2014 active across restarts" : override && override.toLowerCase() !== painted.toLowerCase() ? `previewing ${override} \u2192 not saved yet` : "\xA0" })
-    ] }) : /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-1", children: [
+    ] }) : tab === "themes" ? /* @__PURE__ */ jsx(ThemePresets, { availableThemes, currentAccent: painted, mode, onApply: applyPreset, resolvedMode, setMode, themeName }) : /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-1", children: [
       SLOTS.filter((s) => typeof palette[s[0]] === "string").map((s) => /* @__PURE__ */ jsxs(
         "button",
         {
