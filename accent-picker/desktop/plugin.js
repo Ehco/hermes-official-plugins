@@ -51,12 +51,81 @@ var BASE_KEY = "accent-picker-plus:base";
 var UNDO_KEY = "accent-picker-plus:undo";
 var DEFAULTS_KEY = "accent-picker-plus:defaults";
 var USER_THEMES_KEY = "hermes-desktop-user-themes-v1";
+var THEME_KEY = "hermes-desktop-theme-v2";
 
 var clamp01 = (n) => Math.min(1, Math.max(0, n));
 
 function hexToRgb255(hex) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
   return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+}
+
+// ── value readouts (Google color-picker style boxes) ─────────────────────────
+
+function rgbNorm(rgb) {
+  return [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+}
+
+function rgbToHsv(rgb) {
+  const [r, g, b] = rgbNorm(rgb);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const v = max;
+  let h = 0;
+  if (max !== min) {
+    h = max === r ? ((g - b) / (max - min) + (max < g ? 6 : 0)) : max === g ? ((b - r) / (max - min) + 2) : ((r - g) / (max - min) + 4);
+    h = (h / 6) % 1;
+    if (h < 0) h += 1;
+  }
+  return { h: Math.round(h * 360), s: Math.round(max === 0 ? 0 : (max - min) / max * 100), v: Math.round(v * 100) };
+}
+
+function rgbToHsl(rgb) {
+  const [r, g, b] = rgbNorm(rgb);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? ((g - b) / d + (max < g ? 6 : 0)) : max === g ? ((b - r) / d + 2) : ((r - g) / d + 4);
+    h = (h / 6) % 1;
+    if (h < 0) h += 1;
+  }
+  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+function rgbToCmyk(rgb) {
+  const [r, g, b] = rgbNorm(rgb);
+  const k = 1 - Math.max(r, g, b);
+  const c = k === 1 ? 0 : Math.round((1 - r - k) / (1 - k) * 100);
+  const m = k === 1 ? 0 : Math.round((1 - g - k) / (1 - k) * 100);
+  const y = k === 1 ? 0 : Math.round((1 - b - k) / (1 - k) * 100);
+  return `${c}%, ${m}%, ${y}%, ${Math.round(k * 100)}%`;
+}
+
+function ValueGrid({ hex }) {
+  const rgb = hexToRgb255(hex) || [0, 0, 0];
+  const hsv = rgbToHsv(rgb);
+  const hsl = rgbToHsl(rgb);
+  const cell = (label, value) => /* @__PURE__ */ jsxs("div", {
+    className: "min-w-0 rounded-sm border border-(--dt-border) px-1.5 py-1 text-[10px] leading-tight",
+    children: [
+      /* @__PURE__ */ jsx("span", { className: "block text-(--ui-text-tertiary)", children: label }),
+      /* @__PURE__ */ jsx("span", { className: "block font-mono tabular-nums", children: value })
+    ]
+  }, label);
+  return /* @__PURE__ */ jsxs("div", {
+    className: "grid grid-cols-4 gap-1",
+    children: [
+      cell("RGB", `${rgb[0]}, ${rgb[1]}, ${rgb[2]}`),
+      cell("CMYK", rgbToCmyk(rgb)),
+      cell("HSV", `${hsv.h}°, ${hsv.s}%, ${hsv.v}%`),
+      cell("HSL", `${hsl.h}°, ${hsl.s}%, ${hsl.l}%`)
+    ]
+  });
 }
 
 // ── persistence ──────────────────────────────────────────────────────────────
@@ -74,8 +143,9 @@ function notify(message) {
 }
 
 function rememberBase(name) {
-  // Derived themes carry a -light/-dark suffix; the bare skin name is the base.
-  if (!name || name === OUR_NAME || name.startsWith(OUR_NAME + " -") || name.startsWith(OUR_NAME + "-")) {
+  // Derived themes carry a -light/-dark suffix; live installs carry a ·hex
+  // selector suffix. Anything that starts with our name is our own theme.
+  if (!name || name.startsWith(OUR_NAME)) {
     return;
   }
   try {
@@ -97,7 +167,7 @@ function restoreBase() {
   const stored = baseName();
   const bare = stored.replace(/-(light|dark)$/, "");
   for (const candidate of [bare, stored]) {
-    if (!candidate || candidate === OUR_NAME || candidate.startsWith(OUR_NAME + "-")) {
+    if (!candidate || candidate.startsWith(OUR_NAME)) {
       continue;
     }
     if (requestTheme(candidate)) {
@@ -172,16 +242,25 @@ function captureDefaults(theme, resolvedMode) {
 // store and the trailing re-setItem heals an adopt() of a stale snapshot.
 var bridgeTimer = null;
 var bridgeValue = null;
+var themesCache = null;
+
+function readThemes() {
+  if (themesCache === null) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(USER_THEMES_KEY) || "{}");
+      themesCache = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      themesCache = {};
+    }
+  }
+  return themesCache;
+}
+
 function persistUserThemeRecord(theme) {
   let ok = true;
   try {
-    let record = {};
-    try {
-      record = JSON.parse(localStorage.getItem(USER_THEMES_KEY) || "{}") || {};
-    } catch {}
-    if (typeof record !== "object" || Array.isArray(record)) record = {};
-    record[theme.name] = theme;
-    const serialized = JSON.stringify(record);
+    readThemes()[theme.name] = theme;
+    const serialized = JSON.stringify(readThemes());
     localStorage.setItem(USER_THEMES_KEY, serialized);
     const bridge = typeof window !== "undefined" && window.hermesDesktop && window.hermesDesktop.uiPreferences;
     if (bridge && typeof bridge.write === "function") {
@@ -228,19 +307,58 @@ function installCustom(theme) {
 // outside React (revert needs the derived theme + resolved mode).
 var liveRef = { current: null };
 
-/** Clone the active theme with one slot recolored, and install it. */
-function installSlotHex(theme, resolvedMode, key, hex) {
-  const nextTheme = { ...theme };
-  if (resolvedMode === "dark" && theme.darkColors) {
-    nextTheme.darkColors = { ...theme.darkColors, [key]: hex };
-  } else {
-    nextTheme.colors = { ...theme.colors, [key]: hex };
+/** Live selection names must change per tick: requestTheme(sameName) is a no-op. */
+function liveThemeName(hex) {
+  return OUR_NAME + " · " + hex;
+}
+
+/**
+ * Clone the active theme with one slot recolored, persisted, and selected.
+ *
+ * `finalize` installs the stable OUR_NAME selection (the one that survives
+ * restarts); live ticks use a per-color selector name because requestTheme()
+ * with the currently-active name is a no-op — the preference setter sees the
+ * same value and the app never re-renders the new palette. The durable record
+ * is always written under OUR_NAME so the on-disk theme stays single.
+ */
+function installSlotHex(theme, resolvedMode, key, hex, finalize) {
+  try {
+    const nextTheme = { ...theme };
+    if (resolvedMode === "dark" && theme.darkColors) {
+      nextTheme.darkColors = { ...theme.darkColors, [key]: hex };
+    } else {
+      nextTheme.colors = { ...theme.colors, [key]: hex };
+    }
+    const base = baseOf(theme);
+    // ALWAYS a unique selector: requestTheme with the already-active name is a
+    // no-op that resolves stale data, which snapped every slot back to its old
+    // color on release. The durable record keeps OUR_NAME; boot restores it.
+    const selectorName = liveThemeName(hex);
+    nextTheme.name = selectorName;
+    nextTheme.label = "Custom (Accent Picker)";
+    nextTheme.description = `Edited in Accent Picker+ (base: ${base})`;
+    nextTheme.accentOf = base;
+    let ok = true;
+    try {
+      persistUserThemeRecord({ ...nextTheme, name: OUR_NAME });
+    } catch {
+      ok = false;
+    }
+    try {
+      ctxRef.current.register({ id: "custom-theme", area: THEMES_AREA, data: nextTheme });
+    } catch {}
+    const resolved = requestTheme(selectorName);
+    if (window.__accentPickerPlus) {
+      window.__accentPickerPlus.lastInstall = { key, hex, selectorName, resolved, ok };
+    }
+    return resolved && ok;
+  } catch (e) {
+    if (window.__accentPickerPlus) {
+      window.__accentPickerPlus.lastErr = String(e && e.stack || e);
+      window.__accentPickerPlus.lastInstall = { key, hex, error: true };
+    }
+    return false;
   }
-  nextTheme.name = OUR_NAME;
-  nextTheme.label = "Custom (Accent Picker)";
-  nextTheme.description = `Edited in Accent Picker+ (base: ${baseOf(theme)})`;
-  nextTheme.accentOf = baseOf(theme);
-  return installCustom(nextTheme);
 }
 
 /** Peek (without popping) the newest undo entry, optionally for one slot. */
@@ -253,7 +371,7 @@ function peekUndo(slotKey) {
 }
 
 function isOurs(name) {
-  return name === OUR_NAME || name.startsWith(OUR_NAME + "-");
+  return typeof name === "string" && name.startsWith(OUR_NAME);
 }
 
 /** The base theme a derived/custom theme branched from. */
@@ -261,43 +379,129 @@ function baseOf(src) {
   return isOurs(src.name) ? src.accentOf ?? baseName() : src.name;
 }
 
-// ── drag helper ──────────────────────────────────────────────────────────────
+// ── throttled latest-value runner ────────────────────────────────────────────
+//
+// Live dragging used to run the full theme install on every pointermove. That
+// queued hundreds of installs per second: each one re-registered the theme,
+// pushed a preference selection and serialized the user-theme record, and the
+// queue drained long after the drag stopped (the "filling up with garbage"
+// lag). One trailing timer + a single latest value keeps the queue bounded.
 
-function useDrag(onMove, onEnd) {
-  const ref = useRef(null);
-  const moveRef = useRef(onMove);
-  const endRef = useRef(onEnd);
-  moveRef.current = onMove;
-  endRef.current = onEnd;
-  const onPointerDown = useCallback((event) => {
-    const box = ref.current;
+function throttleLatest(fn, ms) {
+  let timer = null;
+  let last = 0;
+  let pending = null;
+  let hasPending = false;
+  const tick = () => {
+    timer = null;
+    last = Date.now();
+    if (hasPending) {
+      const value = pending;
+      hasPending = false;
+      fn(value);
+    }
+  };
+  const run = (value) => {
+    const now = Date.now();
+    if (!hasPending && now - last >= ms) {
+      last = now;
+      fn(value);
+      return;
+    }
+    pending = value;
+    hasPending = true;
+    const wait = Math.max(0, ms - (now - last));
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(tick, wait);
+  };
+  run.cancel = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    hasPending = false;
+    pending = null;
+  };
+  run.flush = (value) => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    hasPending = false;
+    pending = null;
+    last = Date.now();
+    if (value !== undefined) fn(value);
+  };
+  return run;
+}
+
+// ── pointer surface (React-driven drag; capture-safe) ────────────────────────
+//
+// Each element owns pointerdown/move/up through React props *and* takes pointer
+// capture, so moves continue outside the element and arrive as element events.
+// Nothing persists after pointerup/cancel: there is no listener to accumulate,
+// which is what produced the "filling up with garbage" lag.
+
+var dragSurfaceActive = false;
+
+function PointerSurface({ className, children, onEnd, onPick, style }) {
+  const boxRef = useRef(null);
+  const dragRef = useRef(false);
+  const emit = (e) => {
+    const box = boxRef.current;
     if (!box) {
       return;
     }
-    const emit = (clientX, clientY) => {
-      const r = box.getBoundingClientRect();
-      moveRef.current(clamp01((clientX - r.left) / r.width), clamp01((clientY - r.top) / r.height));
-    };
-    emit(event.clientX, event.clientY);
-    const onPointerMove = (e) => emit(e.clientX, e.clientY);
-    const stop = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", stop);
-      if (endRef.current) {
-        endRef.current();
+    const r = box.getBoundingClientRect();
+    if (!r.width || !r.height) {
+      return;
+    }
+    onPick(clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height));
+  };
+  const onPointerDown = (e) => {
+    if (e.button !== undefined && e.button !== 0) {
+      return;
+    }
+    dragRef.current = true;
+    dragSurfaceActive = true;
+    try {
+      if (e.currentTarget.setPointerCapture) {
+        e.currentTarget.setPointerCapture(e.pointerId);
       }
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", stop);
-  }, []);
-  return { onPointerDown, ref };
+    } catch {}
+    emit(e);
+  };
+  const onPointerMove = (e) => {
+    if (!dragRef.current) {
+      return;
+    }
+    if (window.__accentPickerPlus) {
+      window.__accentPickerPlus.moves = (window.__accentPickerPlus.moves || 0) + 1;
+    }
+    emit(e);
+  };
+  const stop = () => {
+    if (!dragRef.current) {
+      return;
+    }
+    dragRef.current = false;
+    dragSurfaceActive = false;
+    if (onEnd) {
+      onEnd();
+    }
+  };
+  return /* @__PURE__ */ jsx("div", {
+    className,
+    onPointerCancel: stop,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp: stop,
+    ref: boxRef,
+    style,
+    children
+  });
 }
 
 // ── chroma/lightness field (gamut-clipped: always a full square) ─────────────
 
 function ChromaLightnessField({ hue, lch, onPick, onEnd }) {
   const canvas = useRef(null);
-  const drag = useDrag((x, y) => onPick(1 - y, x * CHROMA_MAX), onEnd);
   useEffect(() => {
     const el = canvas.current;
     if (!el) {
@@ -332,14 +536,12 @@ function ChromaLightnessField({ hue, lch, onPick, onEnd }) {
     ctx.clearRect(0, 0, FIELD_W, FIELD_H);
     ctx.putImageData(img, 0, 0);
   }, [hue]);
-  return /* @__PURE__ */ jsxs(
-    "div",
-    {
-      className: "relative cursor-crosshair overflow-hidden rounded-sm",
-      onPointerDown: drag.onPointerDown,
-      ref: drag.ref,
-      style: { height: FIELD_H, width: FIELD_W },
-      children: [
+  return /* @__PURE__ */ jsx(PointerSurface, {
+    className: "relative cursor-crosshair overflow-hidden rounded-sm",
+    onEnd,
+    onPick: (x, y) => onPick(1 - y, x * CHROMA_MAX),
+    style: { height: FIELD_H, width: FIELD_W },
+    children: [
         /* @__PURE__ */ jsx("canvas", { className: "block size-full", height: FIELD_H, ref: canvas, width: FIELD_W }),
         /* @__PURE__ */ jsx(
           "div",
@@ -353,25 +555,32 @@ function ChromaLightnessField({ hue, lch, onPick, onEnd }) {
   );
 }
 
-function HueRail({ lch, onPick, onEnd }) {
-  const drag = useDrag((x) => onPick(x * 360), onEnd);
-  const gradient = useMemo(() => {
+// Static rainbow: the rail shows the true hues at a fixed lightness/chroma and
+// never changes with the marker. Moving the rail recolors the square (its hue),
+// moving inside the square must not recolor the rail back — the Google/chrome
+// picker contract.
+var RAINBOW_GRADIENT = null;
+
+function rainbowGradient() {
+  if (!RAINBOW_GRADIENT) {
     const stops = [];
     for (let i = 0; i <= 36; i += 1) {
       const h = i / 36 * 360;
-      const c = Math.min(lch.c, maxChroma(lch.l, h));
-      stops.push(`${oklchToHex({ l: lch.l, c, h })} ${i / 36 * 100}%`);
+      const c = Math.min(0.33, maxChroma(0.5, h));
+      stops.push(`${oklchToHex({ l: 0.5, c, h })} ${i / 36 * 100}%`);
     }
-    return `linear-gradient(to right, ${stops.join(", ")})`;
-  }, [lch.l, lch.c]);
-  return /* @__PURE__ */ jsx(
-    "div",
-    {
-      className: "relative cursor-ew-resize rounded-full",
-      onPointerDown: drag.onPointerDown,
-      ref: drag.ref,
-      style: { background: gradient, height: RAIL_H, width: FIELD_W },
-      children: /* @__PURE__ */ jsx(
+    RAINBOW_GRADIENT = `linear-gradient(to right, ${stops.join(", ")})`;
+  }
+  return RAINBOW_GRADIENT;
+}
+
+function HueRail({ lch, onPick, onEnd }) {
+  return /* @__PURE__ */ jsx(PointerSurface, {
+    className: "relative cursor-ew-resize rounded-full",
+    onEnd,
+    onPick: (x) => onPick(x * 360),
+    style: { background: rainbowGradient(), height: RAIL_H, width: FIELD_W },
+    children: /* @__PURE__ */ jsx(
         "div",
         {
           className: "pointer-events-none absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,.6)]",
@@ -401,12 +610,25 @@ var SLOTS = [
   ["destructive", "Destructive"]
 ];
 
-function SlotEditor({ palette, slotKey, resolvedMode, onApply, onBack }) {
+function SlotEditor({ baseTheme, palette, slotKey, resolvedMode, onApply, onBack }) {
   const start = hexToOklch(palette[slotKey]) ?? { l: 0.5, c: 0.1, h: 260 };
   const lchRef = useRef(start);
   const [lch, setLch] = useState(start);
-  const lastLive = useRef(0);
   const undoArmed = useRef(false);
+  const applyRef = useRef(onApply);
+  const baseRef = useRef(baseTheme);
+  applyRef.current = onApply;
+  baseRef.current = baseTheme;
+  // Every live commit installs the slot ON TOP OF the session's base theme,
+  // not on top of the previous commit's result. Chaining installs made each
+  // tick a heavier theme (and let stale copies of the derived palettes win), so
+  // only the accent (which paints via setAccentOverride) kept up.
+  const liveRef2 = useRef(null);
+  if (!liveRef2.current) {
+    liveRef2.current = throttleLatest((value) => {
+      applyRef.current(slotKey, value.hex, baseRef.current, value.finalize);
+    }, 120);
+  }
   const update = (patch) => {
     lchRef.current = { ...lchRef.current, ...patch };
     setLch(lchRef.current);
@@ -421,15 +643,20 @@ function SlotEditor({ palette, slotKey, resolvedMode, onApply, onBack }) {
   };
   const commit = (throttled) => {
     armUndo();
-    const now = Date.now();
-    // Live update while dragging, throttled so the theme install (record
-    // write + registry swap + repaint) runs at most ~8x per second; the
-    // final value is always committed on release.
-    if (!throttled || now - lastLive.current > 120) {
-      lastLive.current = now;
-      onApply(slotKey, oklchToHex(lchRef.current));
+    const hex = oklchToHex(lchRef.current);
+    if (window.__accentPickerPlus) {
+      window.__accentPickerPlus.lastCommitHex = hex;
+      window.__accentPickerPlus.lastCommitLch = { ...lchRef.current };
+    }
+    if (throttled) {
+      liveRef2.current({ hex, finalize: false });
+    } else {
+      liveRef2.current.flush({ hex, finalize: true });
     }
   };
+  useEffect(() => () => {
+    liveRef2.current.cancel();
+  }, []);
   const defaults = readDefaults();
   const defaultHex = defaults ? (resolvedMode === "dark" ? (defaults.dark ?? defaults.light) : (defaults.light ?? defaults.dark))?.[slotKey] : null;
   const revertEntry = peekUndo(slotKey);
@@ -466,7 +693,7 @@ function SlotEditor({ palette, slotKey, resolvedMode, onApply, onBack }) {
         "button",
         {
           className: "flex-1 rounded-sm border border-(--dt-border) px-1.5 py-0.5 text-[11px] hover:bg-(--chrome-action-hover)",
-          onClick: () => { if (defaultHex) { armUndo(); onApply(slotKey, defaultHex); const l = hexToOklch(defaultHex) ?? start; lchRef.current = l; setLch(l); } },
+          onClick: () => { if (defaultHex) { armUndo(); onApply(slotKey, defaultHex, baseRef.current, true); const l = hexToOklch(defaultHex) ?? start; lchRef.current = l; setLch(l); } },
           title: defaultHex ? `Base theme default: ${defaultHex}` : "No default captured",
           type: "button",
           children: "Reset to default"
@@ -477,7 +704,7 @@ function SlotEditor({ palette, slotKey, resolvedMode, onApply, onBack }) {
         {
           className: "flex-1 rounded-sm border border-(--dt-border) px-1.5 py-0.5 text-[11px] hover:bg-(--chrome-action-hover)",
           disabled: !revertEntry,
-          onClick: () => { if (revertEntry) { armUndo(); onApply(slotKey, revertEntry.prevHex); const l = hexToOklch(revertEntry.prevHex) ?? start; lchRef.current = l; setLch(l); } },
+          onClick: () => { if (revertEntry) { armUndo(); onApply(slotKey, revertEntry.prevHex, baseRef.current, true); const l = hexToOklch(revertEntry.prevHex) ?? start; lchRef.current = l; setLch(l); } },
           title: revertEntry ? `Back to ${revertEntry.prevHex}` : "Nothing to revert",
           type: "button",
           children: "Revert edit"
@@ -499,6 +726,13 @@ function AccentPicker() {
   const [lch, setLch] = useState(() => hexToOklch(painted) ?? { l: 0.5, c: 0.15, h: 260 });
   const [text, setText] = useState(painted);
   const dragging = useRef(false);
+  const accentLive = useRef(null);
+  const lastHex = useRef(painted);
+  const slotBase = useRef(null);
+  const rafRef = useRef(0);
+  if (!accentLive.current) {
+    accentLive.current = throttleLatest((hex) => setAccentOverride(hex), 120);
+  }
   useEffect(() => {
     rememberBase(theme.name);
   }, [theme.name]);
@@ -508,14 +742,25 @@ function AccentPicker() {
       setText(painted);
     }
   }, [painted]);
-  const commit = (next) => {
+  useEffect(() => () => {
+    accentLive.current.cancel();
+  }, []);
+  const commit = (next, final) => {
     dragging.current = true;
     setLch(next);
     const hex = oklchToHex(next);
+    lastHex.current = hex;
     setText(hex);
-    setAccentOverride(hex);
-    requestAnimationFrame(() => {
+    if (final) {
+      accentLive.current.flush(hex);
+    } else {
+      accentLive.current(hex);
+    }
+    const rafId = rafRef.current;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafRef.current = requestAnimationFrame(() => {
       dragging.current = false;
+      rafRef.current = 0;
     });
   };
   const surface = (renderedMode === "dark" ? theme.darkColors : theme.colors) ?? theme.colors;
@@ -542,16 +787,20 @@ function AccentPicker() {
       notify("Could not save the theme (storage write failed).");
     }
   };
-  const onApply = (key, hex) => {
-    if (installSlotHex(theme, resolvedMode, key, hex)) {
+  const onApply = (key, hex, baseTheme, finalize) => {
+    if (installSlotHex(baseTheme ?? theme, resolvedMode, key, hex, finalize)) {
       notify(`${key} updated.`);
     } else {
       notify("Could not save (storage write failed).");
     }
   };
+  const openSlot = (key) => {
+    slotBase.current = (liveRef.current && liveRef.current.theme) || theme;
+    setSlot(key);
+  };
   const saved = isOurs(theme.name);
   if (tab === "colors" && slot) {
-    return /* @__PURE__ */ jsx(SlotEditor, { onApply, onBack: () => setSlot(null), palette, resolvedMode, slotKey: slot });
+    return /* @__PURE__ */ jsx(SlotEditor, { baseTheme: slotBase.current ?? theme, onApply, onBack: () => setSlot(null), palette, resolvedMode, slotKey: slot });
   }
   return /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-2 p-2", style: { width: FIELD_W + 16 }, children: [
     /* @__PURE__ */ jsxs("div", { className: "flex gap-1", children: [
@@ -575,8 +824,8 @@ function AccentPicker() {
       )
     ] }),
     tab === "accent" ? /* @__PURE__ */ jsxs(Fragment, { children: [
-      /* @__PURE__ */ jsx(ChromaLightnessField, { hue: lch.h, lch, onPick: (l, c) => commit({ ...lch, c, l }) }),
-      /* @__PURE__ */ jsx(HueRail, { lch, onPick: (h) => commit({ ...lch, h }) }),
+      /* @__PURE__ */ jsx(ChromaLightnessField, { hue: lch.h, lch, onEnd: () => accentLive.current.flush(lastHex.current), onPick: (l, c) => commit({ ...lch, c, l }) }),
+      /* @__PURE__ */ jsx(HueRail, { lch, onEnd: () => accentLive.current.flush(lastHex.current), onPick: (h) => commit({ ...lch, h }) }),
       /* @__PURE__ */ jsxs("div", { className: "flex items-center gap-1.5", children: [
         /* @__PURE__ */ jsx("span", { className: "size-5 shrink-0 rounded-sm border border-(--dt-border)", style: { background: painted } }),
         /* @__PURE__ */ jsx(
@@ -602,6 +851,7 @@ function AccentPicker() {
           }
         )
       ] }),
+      /* @__PURE__ */ jsx(ValueGrid, { hex: text && /^#?[0-9a-f]{6}$/i.test(text) ? text : oklchToHex(lch) }),
       /* @__PURE__ */ jsx("div", { className: "grid grid-cols-8 gap-1", children: SWATCHES.map((swatch) => /* @__PURE__ */ jsx(
         "button",
         {
@@ -644,7 +894,7 @@ function AccentPicker() {
         "button",
         {
           className: "flex items-center gap-1.5 rounded-sm border border-(--dt-border) px-1.5 py-1 text-left text-[11px] hover:bg-(--chrome-action-hover)",
-          onClick: () => setSlot(s[0]),
+          onClick: () => openSlot(s[0]),
           type: "button",
           children: [
             /* @__PURE__ */ jsx("span", { className: "min-w-0 flex-1 truncate", children: s[1] }),
@@ -699,6 +949,23 @@ function AccentPickerTrigger() {
   ] });
 }
 
+// Debug hook: lets the verification script inspect drag teardown and cache size.
+if (typeof window !== "undefined") {
+  window.__accentPickerPlus = {
+    dragInFlight: () => dragSurfaceActive,
+    cacheSize: () => themesCache && typeof themesCache === "object" ? Object.keys(themesCache).length : 0,
+    undoSize: () => readUndo().length,
+    themeName: () => liveRef.current && liveRef.current.theme ? liveRef.current.theme.name : null,
+    install: (key, hex, finalize) => {
+      const live = liveRef.current;
+      if (!live || !live.theme) {
+        return "no theme context";
+      }
+      return installSlotHex(live.theme, live.resolvedMode, key, hex, finalize);
+    }
+  };
+}
+
 var plugin = {
   id: "accent",
   name: "Accent Picker+",
@@ -707,6 +974,24 @@ var plugin = {
   register(ctx) {
     ctxRef.current = ctx;
     ctx.onDispose(() => setAccentOverride(null));
+    // A live tick may have survived in the selection store if the app was
+    // killed mid-drag; the variant name isn't in the durable record, so the
+    // next boot would silently fall back. Re-register the durable record and
+    // switch the selection back to the stable theme name.
+    try {
+      const sel = localStorage.getItem(THEME_KEY);
+      if (typeof sel === "string" && sel.startsWith(OUR_NAME + " · ")) {
+        const record = readThemes()[OUR_NAME];
+        if (record && record.name === OUR_NAME) {
+          setTimeout(() => {
+            try {
+              ctx.register({ id: "custom-theme", area: THEMES_AREA, data: record });
+              requestTheme(OUR_NAME);
+            } catch {}
+          }, 800);
+        }
+      }
+    } catch {}
     ctx.registerMany([
       {
         id: "picker",
@@ -757,7 +1042,7 @@ var plugin = {
               notify("No theme context.");
               return;
             }
-            if (installSlotHex(live.theme, live.resolvedMode, entry.slot, entry.prevHex)) {
+            if (installSlotHex(live.theme, live.resolvedMode, entry.slot, entry.prevHex, true)) {
               notify(`Reverted ${entry.slot} to ${entry.prevHex}.`);
             }
           }

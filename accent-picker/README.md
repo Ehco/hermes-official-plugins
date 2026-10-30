@@ -79,6 +79,25 @@ keeping the original's OKLCH field, swatches and commands:
   `renderedMode` made edits land in a palette the other mode never reads once an
   edit brightened the background).
 
+### Later fixes (in this build)
+
+- **Slots stuck on one color.** Live slot installs re-used the stable theme name
+  as the selection target; `requestTheme(sameName)` is a no-op that resolves
+  stale data, so every slot snapped back to its old color on release.
+  Installations now select a unique per-color name, keep the durable record under
+  the stable name, and re-register that record on boot (restoring the stable
+  selection if a crash left a live-tick name in the store).
+- **Garbage-drag lag.** The original drag helper attached window listeners per
+  pointer-down; a missed pointer-up (released outside the window) left them
+  attached, and every later drag multiplied pointermove. The surface now takes
+  element pointer capture with React-driven down/move/up props — nothing
+  lingers, verified across 15 rapid drags with zero dangling drags.
+- **Google-style picker.** The hue rail is now a static true-hue rainbow (it no
+  longer tints with the marker), while the square's gradient follows the hue the
+  rail selects. Drag updates are throttled (~8 fps) to the theme install and are
+  flushed with the final value on release.
+- **Value readouts.** RGB, CMYK, HSV and HSL boxes accompany the hex field.
+
 The artifact in `desktop/plugin.js` is the shipped, tested build; `src/` still
 holds the original picker source and will be synced in a follow-up.
 
